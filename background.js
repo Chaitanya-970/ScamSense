@@ -3,13 +3,13 @@
 //  Local ML model gateway via Flask API
 // ─────────────────────────────────────────────
 
-const API_URL = 'http://localhost:5000/analyze';
+const API_URL = 'https://scamsense-rzq0.onrender.com/analyze';
 
 // ── Persistent stats (survive service-worker restarts) ──
 async function getStats() {
   const result = await chrome.storage.local.get(['threatsCount', 'securityLevel']);
   return {
-    threatsCount:  result.threatsCount  ?? 0,
+    threatsCount: result.threatsCount ?? 0,
     securityLevel: result.securityLevel ?? 100  // 0-100, starts at "safe"
   };
 }
