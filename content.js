@@ -15,43 +15,10 @@ const MAX_QUEUE_SIZE = 20;
 let messageQueue = [];
 let isProcessing = false;
 
-// ── Cooldown tracker ──────────────────────────
-// Prevents the same flagged message from re-bannering within BANNER_COOLDOWN_MS.
-// After the cooldown expires, the same message WILL alert again (genuinely new receipt).
-const BANNER_COOLDOWN_MS = 20 * 1000; // 20 seconds
-
-function loadMap(key) {
-  try {
-    const raw = sessionStorage.getItem(key);
-    return new Map(raw ? JSON.parse(raw) : []);
-  } catch { return new Map(); }
-}
-
-function saveMap(key, map) {
-  try {
-    sessionStorage.setItem(key, JSON.stringify([...map]));
-  } catch { /* ignore quota errors */ }
-}
-
-// Messages already sent to the model (don't re-queue the same DOM element)
-function loadSet(key) {
-  try {
-    const raw = sessionStorage.getItem(key);
-    return new Set(raw ? JSON.parse(raw) : []);
-  } catch { return new Set(); }
-}
-
-function saveSet(key, set) {
-  try {
-    const arr = [...set];
-    if (arr.length > 500) arr.splice(0, arr.length - 500);
-    sessionStorage.setItem(key, JSON.stringify(arr));
-  } catch { /* ignore quota errors */ }
-}
-
-const lastSeenMessages = loadSet('ss_seen');
-// Map of messageText -> timestamp of last banner shown
-const recentlyBannered = loadMap('ss_bannered');
+// Deduplicate by DOM element reference, not text content.
+// Same node re-added by WhatsApp re-render → skipped.
+// New node with same text (genuinely new message) → processed.
+const processedElements = new WeakSet();
 
 // ── Keyword filter ────────────────────────────
 function isSuspicious(text) {
@@ -60,11 +27,9 @@ function isSuspicious(text) {
 }
 
 // ── Enqueue a message for analysis ────────────
-function enqueue(text, source) {
-  const key = `${source}:${text.trim()}`;
-  if (lastSeenMessages.has(key)) return;
-  lastSeenMessages.add(key);
-  saveSet('ss_seen', lastSeenMessages);
+function enqueue(el, text, source) {
+  if (processedElements.has(el)) return;
+  processedElements.add(el);
 
   if (!isSuspicious(text)) return;
 
@@ -92,13 +57,7 @@ function processQueue() {
       if (chrome.runtime.lastError) {
         console.warn('[ScamSense] Send error:', chrome.runtime.lastError.message);
       } else if (response?.flagged) {
-        const bannerKey = text.trim();
-        const lastShown = recentlyBannered.get(bannerKey) ?? 0;
-        if (Date.now() - lastShown > BANNER_COOLDOWN_MS) {
-          showWarningBanner(text, response.reason);
-          recentlyBannered.set(bannerKey, Date.now());
-          saveMap('ss_bannered', recentlyBannered);
-        }
+        showWarningBanner(response.reason);
       }
     }
   );
@@ -125,7 +84,7 @@ function observeMessages() {
           const elements = node.matches?.(sel) ? [node] : [...(node.querySelectorAll?.(sel) ?? [])];
           for (const el of elements) {
             const text = el.innerText?.trim();
-            if (text && text.length > 10) enqueue(text, 'whatsapp-web');
+            if (text && text.length > 10) enqueue(el, text, 'whatsapp-web');
           }
         }
       }
@@ -137,7 +96,7 @@ function observeMessages() {
 }
 
 // ── Warning Banner ────────────────────────────
-function showWarningBanner(_text, reason) {
+function showWarningBanner(reason) {
   document.getElementById('scamsense-banner')?.remove();
 
   const banner = document.createElement('div');
@@ -163,9 +122,7 @@ function showWarningBanner(_text, reason) {
     background: rgba(255,255,255,0.2); border: none; color: #fff;
     padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 13px;
   `;
-  dismissBtn.addEventListener('click', () => {
-    banner.remove();
-  });
+  dismissBtn.addEventListener('click', () => banner.remove());
 
   inner.appendChild(label);
   inner.appendChild(dismissBtn);
@@ -182,7 +139,7 @@ if (document.readyState === 'loading') {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'MANUAL_ANALYZE') {
-    enqueue(msg.text, 'manual-paste');
+    enqueue(document.createElement('span'), msg.text, 'manual-paste');
     sendResponse({ queued: true });
   }
 });
