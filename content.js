@@ -114,27 +114,32 @@ function showWarningBanner(text, reason) {
 
   const banner = document.createElement('div');
   banner.id = 'scamsense-banner';
-  banner.innerHTML = `
-    <div style="
-      position: fixed; top: 0; left: 0; right: 0; z-index: 999999;
-      background: linear-gradient(135deg, #ff3b3b, #c0392b);
-      color: #fff; font-family: 'Segoe UI', sans-serif;
-      padding: 12px 20px; display: flex; align-items: center;
-      justify-content: space-between; box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-      border-bottom: 2px solid #ff6b6b; animation: slideDown 0.3s ease;
-    ">
-      <span style="font-size:15px;">
-        ⚠️ <strong>ScamSense Alert:</strong> ${reason || 'Suspicious message detected!'}
-      </span>
-      <button onclick="this.parentElement.parentElement.remove()" style="
-        background: rgba(255,255,255,0.2); border: none; color: #fff;
-        padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 13px;
-      ">✕ Dismiss</button>
-    </div>
-    <style>
-      @keyframes slideDown { from { transform: translateY(-100%); } to { transform: translateY(0); } }
-    </style>
+
+  const inner = document.createElement('div');
+  inner.style.cssText = `
+    position: fixed; top: 0; left: 0; right: 0; z-index: 999999;
+    background: linear-gradient(135deg, #ff3b3b, #c0392b);
+    color: #fff; font-family: 'Segoe UI', sans-serif;
+    padding: 12px 20px; display: flex; align-items: center;
+    justify-content: space-between; box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    border-bottom: 2px solid #ff6b6b;
   `;
+
+  const label = document.createElement('span');
+  label.style.fontSize = '15px';
+  label.innerHTML = `⚠️ <strong>ScamSense Alert:</strong> ${reason || 'Suspicious message detected!'}`;
+
+  const dismissBtn = document.createElement('button');
+  dismissBtn.textContent = '✕ Dismiss';
+  dismissBtn.style.cssText = `
+    background: rgba(255,255,255,0.2); border: none; color: #fff;
+    padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 13px;
+  `;
+  dismissBtn.addEventListener('click', () => banner.remove());
+
+  inner.appendChild(label);
+  inner.appendChild(dismissBtn);
+  banner.appendChild(inner);
   document.body.prepend(banner);
 }
 
