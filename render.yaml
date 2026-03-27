@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: scamsense-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt && python data/prepare_data.py && python model/train_model.py
+    startCommand: python server/app.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0

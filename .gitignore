@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Model artifacts (regenerated at build time)
+model/scam_model.pkl
+model/tfidf_vectorizer.pkl
+model/evaluation_report.txt
+
+# Data (keep raw, ignore processed)
+data/train.csv
+data/test.csv
+
+# Env
+.env
