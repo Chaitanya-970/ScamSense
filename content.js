@@ -15,8 +15,25 @@ const MAX_QUEUE_SIZE = 20;
 let messageQueue = [];
 let isProcessing = false;
 
-// ── Persistent sets backed by sessionStorage ──
-// Survives WhatsApp SPA navigations within the same tab
+// ── Cooldown tracker ──────────────────────────
+// Prevents the same flagged message from re-bannering within BANNER_COOLDOWN_MS.
+// After the cooldown expires, the same message WILL alert again (genuinely new receipt).
+const BANNER_COOLDOWN_MS = 20 * 1000; // 20 seconds
+
+function loadMap(key) {
+  try {
+    const raw = sessionStorage.getItem(key);
+    return new Map(raw ? JSON.parse(raw) : []);
+  } catch { return new Map(); }
+}
+
+function saveMap(key, map) {
+  try {
+    sessionStorage.setItem(key, JSON.stringify([...map]));
+  } catch { /* ignore quota errors */ }
+}
+
+// Messages already sent to the model (don't re-queue the same DOM element)
 function loadSet(key) {
   try {
     const raw = sessionStorage.getItem(key);
@@ -26,17 +43,15 @@ function loadSet(key) {
 
 function saveSet(key, set) {
   try {
-    // Cap at 500 entries to prevent sessionStorage bloat
     const arr = [...set];
     if (arr.length > 500) arr.splice(0, arr.length - 500);
     sessionStorage.setItem(key, JSON.stringify(arr));
   } catch { /* ignore quota errors */ }
 }
 
-// Messages already sent to the model (don't re-queue)
 const lastSeenMessages = loadSet('ss_seen');
-// Messages already flagged and dismissed (don't re-banner)
-const dismissedMessages = loadSet('ss_dismissed');
+// Map of messageText -> timestamp of last banner shown
+const recentlyBannered = loadMap('ss_bannered');
 
 // ── Keyword filter ────────────────────────────
 function isSuspicious(text) {
@@ -78,8 +93,11 @@ function processQueue() {
         console.warn('[ScamSense] Send error:', chrome.runtime.lastError.message);
       } else if (response?.flagged) {
         const bannerKey = text.trim();
-        if (!dismissedMessages.has(bannerKey)) {
+        const lastShown = recentlyBannered.get(bannerKey) ?? 0;
+        if (Date.now() - lastShown > BANNER_COOLDOWN_MS) {
           showWarningBanner(text, response.reason);
+          recentlyBannered.set(bannerKey, Date.now());
+          saveMap('ss_bannered', recentlyBannered);
         }
       }
     }
@@ -119,7 +137,7 @@ function observeMessages() {
 }
 
 // ── Warning Banner ────────────────────────────
-function showWarningBanner(text, reason) {
+function showWarningBanner(_text, reason) {
   document.getElementById('scamsense-banner')?.remove();
 
   const banner = document.createElement('div');
@@ -146,9 +164,6 @@ function showWarningBanner(text, reason) {
     padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 13px;
   `;
   dismissBtn.addEventListener('click', () => {
-    // Remember this message was dismissed — won't re-show in this tab session
-    dismissedMessages.add(text.trim());
-    saveSet('ss_dismissed', dismissedMessages);
     banner.remove();
   });
 
