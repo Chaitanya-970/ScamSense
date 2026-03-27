@@ -9,12 +9,34 @@ const SUSPICIOUS_KEYWORDS = [
   'account', 'otp', 'bank', 'fraud', 'verify', 'urgent'
 ];
 
-const THROTTLE_INTERVAL_MS = 6000; // 1 message per 6s → max 10/min, safely under free tier's 15 RPM
-const MAX_QUEUE_SIZE = 20;         // Safety cap — don't let queue grow unbounded
+const THROTTLE_INTERVAL_MS = 6000;
+const MAX_QUEUE_SIZE = 20;
 
 let messageQueue = [];
 let isProcessing = false;
-let lastSeenMessages = new Set();
+
+// ── Persistent sets backed by sessionStorage ──
+// Survives WhatsApp SPA navigations within the same tab
+function loadSet(key) {
+  try {
+    const raw = sessionStorage.getItem(key);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch { return new Set(); }
+}
+
+function saveSet(key, set) {
+  try {
+    // Cap at 500 entries to prevent sessionStorage bloat
+    const arr = [...set];
+    if (arr.length > 500) arr.splice(0, arr.length - 500);
+    sessionStorage.setItem(key, JSON.stringify(arr));
+  } catch { /* ignore quota errors */ }
+}
+
+// Messages already sent to the model (don't re-queue)
+const lastSeenMessages = loadSet('ss_seen');
+// Messages already flagged and dismissed (don't re-banner)
+const dismissedMessages = loadSet('ss_dismissed');
 
 // ── Keyword filter ────────────────────────────
 function isSuspicious(text) {
@@ -22,27 +44,20 @@ function isSuspicious(text) {
   return SUSPICIOUS_KEYWORDS.some(kw => lower.includes(kw));
 }
 
-// ── Enqueue a message for AI analysis ─────────
+// ── Enqueue a message for analysis ────────────
 function enqueue(text, source) {
-  // Deduplicate: don't re-scan messages we've already sent
   const key = `${source}:${text.trim()}`;
   if (lastSeenMessages.has(key)) return;
   lastSeenMessages.add(key);
+  saveSet('ss_seen', lastSeenMessages);
 
-  if (!isSuspicious(text)) {
-    console.debug('[ScamSense] Skipped (no suspicious keywords):', text.slice(0, 60));
-    return;
-  }
+  if (!isSuspicious(text)) return;
 
-  // Safety valve: prevent runaway queue on noisy SPAs like WhatsApp Web
   if (messageQueue.length >= MAX_QUEUE_SIZE) {
-    console.warn('[ScamSense] Queue cap reached — dropping oldest to make room.');
-    messageQueue.shift(); // drop oldest unprocessed
+    messageQueue.shift();
   }
 
   messageQueue.push({ text, source });
-  console.log('[ScamSense] Queued message from', source, '— queue length:', messageQueue.length);
-
   if (!isProcessing) processQueue();
 }
 
@@ -62,12 +77,14 @@ function processQueue() {
       if (chrome.runtime.lastError) {
         console.warn('[ScamSense] Send error:', chrome.runtime.lastError.message);
       } else if (response?.flagged) {
-        showWarningBanner(text, response.reason);
+        const bannerKey = text.trim();
+        if (!dismissedMessages.has(bannerKey)) {
+          showWarningBanner(text, response.reason);
+        }
       }
     }
   );
 
-  // Schedule next message after throttle interval
   setTimeout(processQueue, THROTTLE_INTERVAL_MS);
 }
 
@@ -78,12 +95,10 @@ function observeMessages() {
       for (const node of mutation.addedNodes) {
         if (node.nodeType !== Node.ELEMENT_NODE) continue;
 
-        // ── WhatsApp Web selectors ──
-        // Incoming text messages use these data-testid attributes
         const waSelectors = [
-          '[data-testid="msg-container"]',      // message bubble wrapper
-          '[data-testid="conversation-panel-messages"] .copyable-text', // message body
-          'span.selectable-text.copyable-text', // actual text spans
+          '[data-testid="msg-container"]',
+          '[data-testid="conversation-panel-messages"] .copyable-text',
+          'span.selectable-text.copyable-text',
           '[class*="message-in"] .copyable-text',
           '[class*="message-out"] .copyable-text',
         ];
@@ -99,17 +114,12 @@ function observeMessages() {
     }
   });
 
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true
-  });
-
+  observer.observe(document.body, { childList: true, subtree: true });
   console.log('[ScamSense] Observer attached.');
 }
 
 // ── Warning Banner ────────────────────────────
 function showWarningBanner(text, reason) {
-  // Remove existing banner if any
   document.getElementById('scamsense-banner')?.remove();
 
   const banner = document.createElement('div');
@@ -135,7 +145,12 @@ function showWarningBanner(text, reason) {
     background: rgba(255,255,255,0.2); border: none; color: #fff;
     padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 13px;
   `;
-  dismissBtn.addEventListener('click', () => banner.remove());
+  dismissBtn.addEventListener('click', () => {
+    // Remember this message was dismissed — won't re-show in this tab session
+    dismissedMessages.add(text.trim());
+    saveSet('ss_dismissed', dismissedMessages);
+    banner.remove();
+  });
 
   inner.appendChild(label);
   inner.appendChild(dismissBtn);
@@ -150,8 +165,7 @@ if (document.readyState === 'loading') {
   observeMessages();
 }
 
-// Listen for manual analysis requests from popup
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'MANUAL_ANALYZE') {
     enqueue(msg.text, 'manual-paste');
     sendResponse({ queued: true });

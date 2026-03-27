@@ -7,10 +7,11 @@ const API_URL = 'https://scamsense-rzq0.onrender.com/analyze';
 
 // ── Persistent stats (survive service-worker restarts) ──
 async function getStats() {
-  const result = await chrome.storage.local.get(['threatsCount', 'securityLevel']);
+  const result = await chrome.storage.local.get(['threatsCount', 'securityLevel', 'scansCount']);
   return {
-    threatsCount: result.threatsCount ?? 0,
-    securityLevel: result.securityLevel ?? 100  // 0-100, starts at "safe"
+    threatsCount:  result.threatsCount  ?? 0,
+    securityLevel: result.securityLevel ?? 100,
+    scansCount:    result.scansCount    ?? 0,
   };
 }
 
@@ -20,19 +21,24 @@ async function saveStats(stats) {
 
 // ── Local model call ──────────────────────────
 async function callLocalModel(text) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
   try {
     const response = await fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
+      body: JSON.stringify({ text }),
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
     if (!response.ok) {
       return { flagged: false, reason: `Server error ${response.status}`, confidence: 0 };
     }
     return await response.json();
   } catch (err) {
-    console.error('[ScamSense] Local model error:', err);
-    return { flagged: false, reason: 'ScamSense server not running. Start it with: python server/app.py', confidence: 0 };
+    clearTimeout(timeout);
+    console.error('[ScamSense] API error:', err.name === 'AbortError' ? 'Request timed out' : err);
+    return { flagged: false, reason: 'API unavailable', confidence: 0 };
   }
 }
 
