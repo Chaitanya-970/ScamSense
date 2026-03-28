@@ -20,9 +20,9 @@ async function saveStats(stats) {
 }
 
 // ── Local model call ──────────────────────────
-async function callLocalModel(text) {
+async function fetchWithTimeout(text, timeoutMs) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(API_URL, {
       method: 'POST',
@@ -31,14 +31,27 @@ async function callLocalModel(text) {
       signal: controller.signal,
     });
     clearTimeout(timeout);
-    if (!response.ok) {
-      return { flagged: false, reason: `Server error ${response.status}`, confidence: 0 };
-    }
+    if (!response.ok) throw new Error(`Server error ${response.status}`);
     return await response.json();
   } catch (err) {
     clearTimeout(timeout);
-    console.error('[ScamSense] API error:', err.name === 'AbortError' ? 'Request timed out' : err);
-    return { flagged: false, reason: 'API unavailable', confidence: 0 };
+    throw err;
+  }
+}
+
+async function callLocalModel(text) {
+  try {
+    // First attempt — 50s to handle Render cold start (~30-50s wake time)
+    return await fetchWithTimeout(text, 50000);
+  } catch (firstErr) {
+    console.warn('[ScamSense] First attempt failed:', firstErr.message, '— retrying...');
+    try {
+      // One retry with another 20s
+      return await fetchWithTimeout(text, 20000);
+    } catch (err) {
+      console.error('[ScamSense] API unreachable after retry.');
+      return { flagged: false, reason: 'API unavailable — try again in a moment', confidence: 0 };
+    }
   }
 }
 
