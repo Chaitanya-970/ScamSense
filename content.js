@@ -9,16 +9,21 @@ const SUSPICIOUS_KEYWORDS = [
   'account', 'otp', 'bank', 'fraud', 'verify', 'urgent'
 ];
 
-const THROTTLE_INTERVAL_MS = 6000;
+const THROTTLE_INTERVAL_MS = 2000;  // 2s between API calls
 const MAX_QUEUE_SIZE = 20;
+const SELECTOR_DEDUP_MS = 3000;     // ignore same text if seen within 3s (multiple selectors firing for one message)
 
 let messageQueue = [];
 let isProcessing = false;
+let nextMsgId = 0;
+const dismissedIds = new Set();
 
-// Deduplicate by DOM element reference, not text content.
-// Same node re-added by WhatsApp re-render → skipped.
-// New node with same text (genuinely new message) → processed.
+// Deduplicate by DOM element reference — same node re-rendered by WhatsApp = skipped.
 const processedElements = new WeakSet();
+// Deduplicate by text within a short window — prevents multiple selectors
+// matching the same message and queuing it 3-4 times.
+// After SELECTOR_DEDUP_MS, the same text is treated as a new message.
+const recentTexts = new Map(); // text -> timestamp
 
 // ── Keyword filter ────────────────────────────
 function isSuspicious(text) {
@@ -28,16 +33,24 @@ function isSuspicious(text) {
 
 // ── Enqueue a message for analysis ────────────
 function enqueue(el, text, source) {
+  // 1. Skip if this exact DOM element was already processed
   if (processedElements.has(el)) return;
   processedElements.add(el);
 
   if (!isSuspicious(text)) return;
 
+  // 2. Skip if the same text was queued within SELECTOR_DEDUP_MS
+  //    (multiple selectors firing for the same message bubble)
+  const key = text.trim();
+  const lastQueued = recentTexts.get(key) ?? 0;
+  if (Date.now() - lastQueued < SELECTOR_DEDUP_MS) return;
+  recentTexts.set(key, Date.now());
+
   if (messageQueue.length >= MAX_QUEUE_SIZE) {
     messageQueue.shift();
   }
 
-  messageQueue.push({ text, source });
+  messageQueue.push({ text, source, msgId: nextMsgId++ });
   if (!isProcessing) processQueue();
 }
 
@@ -49,15 +62,15 @@ function processQueue() {
   }
 
   isProcessing = true;
-  const { text, source } = messageQueue.shift();
+  const { text, source, msgId } = messageQueue.shift();
 
   chrome.runtime.sendMessage(
     { type: 'ANALYZE_MESSAGE', payload: { text, source } },
     (response) => {
       if (chrome.runtime.lastError) {
         console.warn('[ScamSense] Send error:', chrome.runtime.lastError.message);
-      } else if (response?.flagged) {
-        showWarningBanner(response.reason);
+      } else if (response?.flagged && !dismissedIds.has(msgId)) {
+        showWarningBanner(response.reason, msgId);
       }
     }
   );
@@ -96,7 +109,7 @@ function observeMessages() {
 }
 
 // ── Warning Banner ────────────────────────────
-function showWarningBanner(reason) {
+function showWarningBanner(reason, msgId) {
   document.getElementById('scamsense-banner')?.remove();
 
   const banner = document.createElement('div');
@@ -122,7 +135,10 @@ function showWarningBanner(reason) {
     background: rgba(255,255,255,0.2); border: none; color: #fff;
     padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 13px;
   `;
-  dismissBtn.addEventListener('click', () => banner.remove());
+  dismissBtn.addEventListener('click', () => {
+    dismissedIds.add(msgId);
+    banner.remove();
+  });
 
   inner.appendChild(label);
   inner.appendChild(dismissBtn);
